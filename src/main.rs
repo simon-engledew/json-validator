@@ -1,6 +1,8 @@
 use std::env;
 use std::fs::File;
 use std::io::BufReader;
+use std::collections::HashMap;
+use std::path::Path;
 
 use jsonschema::{Draft, JSONSchema};
 use serde_json;
@@ -49,30 +51,45 @@ fn get_message(errors: jsonschema::ErrorIterator) -> String {
     out
 }
 
-#[post("/validate")]
-async fn validate(schema: web::Data<JSONSchema>, document: web::Json<serde_json::Value>) -> actix_web::Result<impl actix_web::Responder> {
-    if let Err(errors) = schema.validate(&document) {
-        return Err(error::ErrorBadRequest(get_message(errors)))
-    };
+#[post("/validate/{path}")]
+async fn validate(schemas: web::Data<HashMap<String, JSONSchema>>, document: web::Json<serde_json::Value>, info: web::Path<(String,)>) -> actix_web::Result<impl actix_web::Responder> {
+    let info = info.into_inner();
+
+    let schema = schemas.get(&info.0).ok_or(error::ErrorNotFound("not found"))?;
+
+    schema.validate(&document).map_err(|errors| error::ErrorBadRequest(get_message(errors)))?;
 
     Ok("")
 }
 
-fn load_schema(path: &str) -> Result<JSONSchema, std::io::Error> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let schema = serde_json::from_reader(reader)?;
+fn load_schemas(paths: impl IntoIterator<Item = String>) -> Result<HashMap<String, JSONSchema>, std::io::Error> {
+    let mut schemas = HashMap::new();
 
-    Ok(JSONSchema::options()
-        .with_draft(Draft::Draft7)
-        .compile(&schema)
-        .expect("failed to compile schema"))
+    let iterator = paths.into_iter().skip(1);
+
+    for arg in iterator {
+        let path = Path::new(&arg);
+        let name = path.file_stem().and_then(|v|v.to_str()).ok_or(std::io::Error::new(std::io::ErrorKind::Other, format!("Invalid argument format: {}", arg)))?;
+
+        println!("Loading {}", name);
+
+        let file = File::open(&path)?;
+        let reader = BufReader::new(file);
+        let doc = serde_json::from_reader(reader)?;
+        let schema = JSONSchema::options()
+            .with_draft(Draft::Draft7)
+            .compile(&doc)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to compile schema {}: {}", path.display(), format_error(err))))?;
+
+        schemas.insert(String::from(name), schema);
+    }
+
+    Ok(schemas)
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let path = env::args().nth(1).unwrap_or("schema.json".to_string());
-    let schema = web::Data::new(load_schema(&path).unwrap());
+    let schemas = web::Data::new(load_schemas(env::args()).expect("Failed to load schemas"));
 
     let bind = env::var("ADDR").unwrap_or(String::from("127.0.0.1:8080"));
 
@@ -80,7 +97,7 @@ async fn main() -> std::io::Result<()> {
 
     HttpServer::new(move || App::new()
             .app_data(web::Data::new(web::JsonConfig::default().limit(1024 * 1024 * 500)))
-            .app_data(schema.clone())
+            .app_data(schemas.clone())
             .service(ping)
             .service(validate)
         )
