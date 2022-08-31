@@ -65,13 +65,11 @@ async fn validate(schemas: web::Data<HashMap<String, JSONSchema>>, document: web
 fn load_schemas(paths: impl IntoIterator<Item = String>) -> Result<HashMap<String, JSONSchema>, std::io::Error> {
     let mut schemas = HashMap::new();
 
-    let iterator = paths.into_iter().skip(1);
+    for path_string in paths {
+        let path = Path::new(&path_string);
+        let name = path.file_stem().and_then(|v|v.to_str()).ok_or(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to process {}", path_string)))?;
 
-    for arg in iterator {
-        let path = Path::new(&arg);
-        let name = path.file_stem().and_then(|v|v.to_str()).ok_or(std::io::Error::new(std::io::ErrorKind::Other, format!("Invalid argument format: {}", arg)))?;
-
-        println!("Loading {}", name);
+        println!("Loading {}", path_string);
 
         let file = File::open(&path)?;
         let reader = BufReader::new(file);
@@ -79,7 +77,7 @@ fn load_schemas(paths: impl IntoIterator<Item = String>) -> Result<HashMap<Strin
         let schema = JSONSchema::options()
             .with_draft(Draft::Draft7)
             .compile(&doc)
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to compile schema {}: {}", path.display(), format_error(err))))?;
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to compile schema {}: {}", path_string, format_error(err))))?;
 
         schemas.insert(String::from(name), schema);
     }
@@ -89,7 +87,7 @@ fn load_schemas(paths: impl IntoIterator<Item = String>) -> Result<HashMap<Strin
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let schemas = web::Data::new(load_schemas(env::args()).expect("Failed to load schemas"));
+    let schemas = web::Data::new(load_schemas(env::args().skip(1)).expect("Failed to load schemas"));
 
     let bind = env::var("ADDR").unwrap_or(String::from("127.0.0.1:8080"));
 
