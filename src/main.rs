@@ -52,7 +52,7 @@ fn get_message(errors: jsonschema::ErrorIterator) -> String {
 }
 
 #[post("/{path:.*}")]
-async fn validate(schemas: web::Data<&'static HashMap<String, JSONSchema>>, document: web::Json<serde_json::Value>, info: web::Path<(String,)>) -> actix_web::Result<impl actix_web::Responder> {
+async fn validate(schemas: web::Data<HashMap<String, JSONSchema>>, document: web::Json<serde_json::Value>, info: web::Path<(String,)>) -> actix_web::Result<impl actix_web::Responder> {
     let info = info.into_inner();
 
     let schema = schemas.get(&info.0).ok_or(error::ErrorNotFound("not found"))?;
@@ -62,7 +62,7 @@ async fn validate(schemas: web::Data<&'static HashMap<String, JSONSchema>>, docu
     Ok("")
 }
 
-fn load_schemas(paths: impl IntoIterator<Item = String>) -> Result<&'static HashMap<String, JSONSchema>, std::io::Error> {
+fn load_schemas(paths: impl IntoIterator<Item = String>) -> Result<HashMap<String, JSONSchema>, std::io::Error> {
     let mut schemas = HashMap::new();
 
     for path_string in paths {
@@ -81,27 +81,24 @@ fn load_schemas(paths: impl IntoIterator<Item = String>) -> Result<&'static Hash
         schemas.insert(String::from(path.to_string_lossy()), schema);
     }
 
-    Ok(Box::leak(Box::new(schemas)))
+    Ok(schemas)
 }
 
-fn config(schemas: &'static HashMap<String, JSONSchema>) -> impl Fn(&mut web::ServiceConfig) {
-    move |cfg: &mut web::ServiceConfig| {
-        cfg
-            .app_data(web::Data::new(web::JsonConfig::default().limit(1024 * 1024 * 500)))
-            .app_data(web::Data::new(schemas))
-            .service(ping)
-            .service(validate);
-    }
+fn config(cfg: &mut web::ServiceConfig) {
+    cfg
+        .app_data(web::Data::new(web::JsonConfig::default().limit(1024 * 1024 * 500)))
+        .service(ping)
+        .service(validate);
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let schemas: &'static HashMap<String, JSONSchema> = load_schemas(env::args().skip(1)).expect("Failed to load schemas");
+    let schemas = web::Data::new(load_schemas(env::args().skip(1)).expect("Failed to load schemas"));
     let bind = env::var("ADDR").unwrap_or(String::from("127.0.0.1:8080"));
 
     println!("Listening on {}", bind);
 
-    HttpServer::new(move || App::new().configure(config(&schemas)))
+    HttpServer::new(move || App::new().configure(config).app_data(schemas.clone()))
         .bind(bind)?
         .run()
         .await
@@ -118,8 +115,8 @@ mod tests {
 
     #[actix_web::test]
     async fn test_validation() {
-        let schemas = load_schemas(vec![String::from("schemas/names.json")]).expect("ok");
-        let app = test::init_service(App::new().configure(config(&schemas))).await;
+        let schemas = web::Data::new(load_schemas(vec![String::from("schemas/names.json")]).expect("ok"));
+        let app = test::init_service(App::new().configure(config).app_data(schemas)).await;
         let req = test::TestRequest::post()
             .insert_header(ContentType::json())
             .uri("/schemas/names.json")
