@@ -1,12 +1,16 @@
+extern crate env_logger;
+
 use std::env;
 use std::fs::File;
 use std::io::BufReader;
 use std::collections::HashMap;
 use std::path::Path;
+use log;
 
 use jsonschema::{Draft, JSONSchema};
 use serde_json;
 use actix_web::{error, web, get, post, App, HttpServer, HttpRequest};
+use actix_web::middleware::Logger;
 
 
 #[get("/_ping")]
@@ -68,7 +72,7 @@ fn load_schemas(paths: impl IntoIterator<Item = String>) -> Result<HashMap<Strin
     for path_string in paths {
         let path = Path::new(&path_string);
 
-        println!("Loading {}", path_string);
+        log::info!("loading {}", path_string);
 
         let file = File::open(&path)?;
         let reader = BufReader::new(file);
@@ -96,12 +100,14 @@ fn config(schemas: &web::Data<HashMap<String, JSONSchema>>) -> impl FnOnce(&mut 
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
+
     let schemas = web::Data::new(load_schemas(env::args().skip(1)).expect("Failed to load schemas"));
     let bind = env::var("ADDR").unwrap_or(String::from("127.0.0.1:8080"));
 
-    println!("Listening on {}", bind);
+    log::info!("starting server at http://{}", bind);
 
-    HttpServer::new(move || App::new().configure(config(&schemas)))
+    HttpServer::new(move || App::new().wrap(Logger::default()).configure(config(&schemas)))
         .bind(bind)?
         .run()
         .await
