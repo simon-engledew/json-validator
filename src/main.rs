@@ -84,11 +84,14 @@ fn load_schemas(paths: impl IntoIterator<Item = String>) -> Result<HashMap<Strin
     Ok(schemas)
 }
 
-fn config(cfg: &mut web::ServiceConfig) {
-    cfg
-        .app_data(web::Data::new(web::JsonConfig::default().limit(1024 * 1024 * 500)))
-        .service(ping)
-        .service(validate);
+fn config(schemas: &web::Data<HashMap<String, JSONSchema>>) -> impl FnOnce(&mut web::ServiceConfig) + '_ {
+    move |cfg: &mut web::ServiceConfig| {
+        cfg
+            .app_data(web::Data::new(web::JsonConfig::default().limit(1024 * 1024 * 500)))
+            .app_data(web::Data::clone(schemas))
+            .service(ping)
+            .service(validate);
+    }
 }
 
 #[actix_web::main]
@@ -98,7 +101,7 @@ async fn main() -> std::io::Result<()> {
 
     println!("Listening on {}", bind);
 
-    HttpServer::new(move || App::new().configure(config).app_data(schemas.clone()))
+    HttpServer::new(move || App::new().configure(config(&schemas)))
         .bind(bind)?
         .run()
         .await
@@ -116,7 +119,7 @@ mod tests {
     #[actix_web::test]
     async fn test_validation() {
         let schemas = web::Data::new(load_schemas(vec![String::from("schemas/names.json")]).expect("ok"));
-        let app = test::init_service(App::new().configure(config).app_data(schemas)).await;
+        let app = test::init_service(App::new().configure(config(&schemas))).await;
         let req = test::TestRequest::post()
             .insert_header(ContentType::json())
             .uri("/schemas/names.json")
