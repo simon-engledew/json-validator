@@ -5,6 +5,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::collections::HashMap;
 use log;
+use std::fmt;
 
 use walkdir::WalkDir;
 use jsonschema::{Draft, JSONSchema};
@@ -66,39 +67,50 @@ async fn validate(schemas: web::Data<HashMap<String, JSONSchema>>, document: web
     Ok("")
 }
 
-fn load_schemas(paths: impl IntoIterator<Item = String>) -> Result<HashMap<String, JSONSchema>, std::io::Error> {
+#[derive(Debug)]
+enum LoadError<'a> {
+    ReadError(&'a str, std::io::Error),
+    ParseError(&'a str, serde_json::Error),
+    CompileError(&'a str, std::string::String),
+}
+
+impl fmt::Display for LoadError<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match &*self {
+            LoadError::ReadError(path, err) =>
+                write!(f, "Failed to read schema {}: {}", path, err),
+            LoadError::ParseError(path, err) =>
+                write!(f, "Failed to parse schema {}: {}", path, err),
+            LoadError::CompileError(path, msg) =>
+                write!(f, "Failed to compile schema {}: {}", path, msg),
+        }
+    }
+}
+
+fn load_schemas<'a>(paths: impl IntoIterator<Item = String>) -> Result<HashMap<String, JSONSchema>, LoadError<'a>> {
     let mut schemas = HashMap::new();
 
     for path_string in paths {
-        for entry in WalkDir::new(&path_string)
-                .into_iter()
-                .filter_map(Result::ok)
-                .filter(|e| !e.file_type().is_dir()) {
-
+        for entry in WalkDir::new(&path_string).into_iter().filter_map(Result::ok).filter(|e| !e.file_type().is_dir()) {
             let path = entry.into_path();
 
             let key = String::from(path.strip_prefix("./").unwrap_or(&path).to_string_lossy());
 
             if key.ends_with(".json") {
-                log::debug!("considering {}", key);
+                log::debug!("Considering {}", key);
 
-                let res = File::open(path).and_then(|file|
-                    serde_json::from_reader(BufReader::new(file)).
-                        map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to parse json: {}", err)))
-                ).and_then(|doc|
-                    JSONSchema::options().
-                        with_draft(Draft::Draft7).
-                        compile(&doc).
-                        map_err(|err|
-                            std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to compile schema {}: {}", path_string, format_error(err)))
-                        )
-                );
+                let res = File::open(path).map_err(|err| LoadError::ReadError(&key, err)
+                    ).and_then(|file|
+                        serde_json::from_reader(BufReader::new(file)).map_err(|err| LoadError::ParseError(&key, err))
+                    ).and_then(|doc|
+                        JSONSchema::options().with_draft(Draft::Draft7).compile(&doc).map_err(|err| LoadError::CompileError(&key, err.to_string()))
+                    );
 
                 if let Ok(schema) = res {
-                    log::info!("loaded {}", key);
+                    log::info!("Loaded {}", key);
                     schemas.insert(key, schema);
                 } else if let Err(err) = res {
-                    log::error!("failed to load {}", err);
+                    log::error!("{}", err);
                 };
             }
         }
