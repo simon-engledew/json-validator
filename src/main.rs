@@ -185,30 +185,28 @@ async fn main() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use actix_web::{
-        http::{header::ContentType, StatusCode},
-        test,
-        web::Bytes,
-    };
 
     #[actix_web::test]
     async fn test_validation() {
         let schemas = actix_web::web::Data::new(
             load_schemas(vec![String::from("schemas/names.json")]).expect("ok"),
         );
-        let app = test::init_service(actix_web::App::new().configure(config(&schemas))).await;
-        let req = test::TestRequest::post()
-            .insert_header(ContentType::json())
+        let app =
+            actix_web::test::init_service(actix_web::App::new().configure(config(&schemas))).await;
+        let req = actix_web::test::TestRequest::post()
+            .insert_header(actix_web::http::header::ContentType::json())
             .uri("/schemas/names.json")
             .set_payload("{}")
             .to_request();
 
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        let result = test::read_body(resp).await;
+        let resp = actix_web::test::call_service(&app, req).await;
+        assert_eq!(resp.status(), actix_web::http::StatusCode::BAD_REQUEST);
+        let result = actix_web::test::read_body(resp).await;
         assert_eq!(
             result,
-            Bytes::from_static(b"\"name\" is a required property, \"age\" is a required property")
+            actix_web::web::Bytes::from_static(
+                b"\"name\" is a required property, \"age\" is a required property"
+            )
         );
     }
 }
