@@ -142,16 +142,30 @@ fn config(
     }
 }
 
+fn iter_either(
+    pred: bool,
+    a: impl Iterator<Item = String>,
+    b: impl Iterator<Item = String>,
+) -> impl Iterator<Item = String> {
+    let iter_a = if pred { Some(a) } else { None };
+
+    let iter_b = if !pred { Some(b) } else { None };
+
+    iter_a
+        .into_iter()
+        .flatten()
+        .chain(iter_b.into_iter().flatten())
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
 
-    // default to the current working directory
-    let paths = if std::env::args().len() == 1 {
-        vec![".".to_string()]
-    } else {
-        std::env::args().skip(1).collect()
-    };
+    let paths = iter_either(
+        std::env::args().len() > 1,
+        std::env::args().skip(1),
+        std::iter::once(String::from(".")),
+    );
 
     let schemas = actix_web::web::Data::new(load_schemas(paths).expect("failed to load schemas"));
     let bind = std::env::var("ADDR").unwrap_or(String::from("127.0.0.1:8080"));
