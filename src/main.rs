@@ -142,11 +142,11 @@ fn config(
     }
 }
 
-fn iter_either(
+fn iter_either<T>(
     pred: bool,
-    a: impl Iterator<Item = String>,
-    b: impl Iterator<Item = String>,
-) -> impl Iterator<Item = String> {
+    a: impl Iterator<Item = T>,
+    b: impl Iterator<Item = T>,
+) -> impl Iterator<Item = T> {
     let iter_a = if pred { Some(a) } else { None };
 
     let iter_b = if !pred { Some(b) } else { None };
