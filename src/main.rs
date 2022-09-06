@@ -69,15 +69,15 @@ async fn validate(
 }
 
 #[derive(Debug)]
-enum LoadError<'a> {
-    Read(&'a str, std::io::Error),
-    Parse(&'a str, serde_json::Error),
-    Compile(&'a str, String),
+enum LoadError {
+    Read(String, std::io::Error),
+    Parse(String, serde_json::Error),
+    Compile(String, String),
 }
 
-impl std::fmt::Display for LoadError<'_> {
+impl std::fmt::Display for LoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match &*self {
+        match self {
             LoadError::Read(path, err) => write!(f, "Failed to read schema {}: {}", path, err),
             LoadError::Parse(path, err) => {
                 write!(f, "Failed to parse schema {}: {}", path, err)
@@ -89,7 +89,7 @@ impl std::fmt::Display for LoadError<'_> {
     }
 }
 
-fn load_schemas<'a>(paths: impl IntoIterator<Item = String>) -> Result<SchemaMap, LoadError<'a>> {
+fn load_schemas(paths: impl IntoIterator<Item = String>) -> Result<SchemaMap, LoadError> {
     let mut schemas = SchemaMap::new();
 
     for path_string in paths {
@@ -105,25 +105,21 @@ fn load_schemas<'a>(paths: impl IntoIterator<Item = String>) -> Result<SchemaMap
             if key.ends_with(".json") {
                 log::debug!("Considering {}", key);
 
-                let res = std::fs::File::open(path)
-                    .map_err(|err| LoadError::Read(&key, err))
+                let schema = std::fs::File::open(path)
+                    .map_err(|err| LoadError::Read(String::from(key.as_str()), err))
                     .and_then(|file| {
                         serde_json::from_reader(std::io::BufReader::new(file))
-                            .map_err(|err| LoadError::Parse(&key, err))
+                            .map_err(|err| LoadError::Parse(String::from(key.as_str()), err))
                     })
                     .and_then(|doc| {
                         jsonschema::JSONSchema::options()
                             .with_draft(jsonschema::Draft::Draft7)
                             .compile(&doc)
-                            .map_err(|err| LoadError::Compile(&key, err.to_string()))
-                    });
+                            .map_err(|err| LoadError::Compile(String::from(key.as_str()), err.to_string()))
+                    })?;
 
-                if let Ok(schema) = res {
-                    log::info!("Loaded {}", key);
-                    schemas.insert(key, schema);
-                } else if let Err(err) = res {
-                    log::error!("{}", err);
-                };
+                log::info!("Loaded {}", key);
+                schemas.insert(key, schema);
             }
         }
     }
@@ -182,7 +178,7 @@ mod tests {
     #[actix_web::test]
     async fn test_validation() {
         let schemas =
-            web::Data::new(load_schemas(vec![String::from("schemas/names.json")]).expect("ok"));
+            actix_web::web::Data::new(load_schemas(vec![String::from("schemas/names.json")]).expect("ok"));
         let app = test::init_service(actix_web::App::new().configure(config(&schemas))).await;
         let req = test::TestRequest::post()
             .insert_header(ContentType::json())
