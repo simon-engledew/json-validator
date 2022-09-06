@@ -178,7 +178,6 @@ fn either_iter<T>(
     b: impl Iterator<Item = T>,
 ) -> impl Iterator<Item = T> {
     let iter_a = if pred { Some(a) } else { None };
-
     let iter_b = if !pred { Some(b) } else { None };
 
     iter_a
