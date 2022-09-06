@@ -1,9 +1,9 @@
+use actix_web;
 use env_logger;
+use jsonschema;
 use log;
 use serde_json;
 use walkdir;
-use jsonschema;
-use actix_web;
 
 type SchemaMap = std::collections::HashMap<String, jsonschema::JSONSchema>;
 
@@ -115,7 +115,9 @@ fn load_schemas(paths: impl IntoIterator<Item = String>) -> Result<SchemaMap, Lo
                         jsonschema::JSONSchema::options()
                             .with_draft(jsonschema::Draft::Draft7)
                             .compile(&doc)
-                            .map_err(|err| LoadError::Compile(String::from(key.as_str()), err.to_string()))
+                            .map_err(|err| {
+                                LoadError::Compile(String::from(key.as_str()), err.to_string())
+                            })
                     })?;
 
                 log::info!("Loaded {}", key);
@@ -177,8 +179,9 @@ mod tests {
 
     #[actix_web::test]
     async fn test_validation() {
-        let schemas =
-            actix_web::web::Data::new(load_schemas(vec![String::from("schemas/names.json")]).expect("ok"));
+        let schemas = actix_web::web::Data::new(
+            load_schemas(vec![String::from("schemas/names.json")]).expect("ok"),
+        );
         let app = test::init_service(actix_web::App::new().configure(config(&schemas))).await;
         let req = test::TestRequest::post()
             .insert_header(ContentType::json())
