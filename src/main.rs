@@ -4,9 +4,9 @@ use std::env;
 use std::fs::File;
 use std::io::BufReader;
 use std::collections::HashMap;
-use std::path::Path;
 use log;
 
+use walkdir::WalkDir;
 use jsonschema::{Draft, JSONSchema};
 use serde_json;
 use actix_web::{error, web, get, post, App, HttpServer, HttpRequest};
@@ -70,19 +70,38 @@ fn load_schemas(paths: impl IntoIterator<Item = String>) -> Result<HashMap<Strin
     let mut schemas = HashMap::new();
 
     for path_string in paths {
-        let path = Path::new(&path_string);
+        for entry in WalkDir::new(&path_string)
+                .into_iter()
+                .filter_map(Result::ok)
+                .filter(|e| !e.file_type().is_dir()) {
 
-        log::info!("loading {}", path_string);
+            let path = entry.into_path();
 
-        let file = File::open(&path)?;
-        let reader = BufReader::new(file);
-        let doc = serde_json::from_reader(reader)?;
-        let schema = JSONSchema::options()
-            .with_draft(Draft::Draft7)
-            .compile(&doc)
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to compile schema {}: {}", path_string, format_error(err))))?;
+            let key = String::from(path.strip_prefix("./").unwrap_or(&path).to_string_lossy());
 
-        schemas.insert(String::from(path.to_string_lossy()), schema);
+            if key.ends_with(".json") {
+                log::debug!("considering {}", key);
+
+                let res = File::open(path).and_then(|file|
+                    serde_json::from_reader(BufReader::new(file)).
+                        map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to parse json: {}", err)))
+                ).and_then(|doc|
+                    JSONSchema::options().
+                        with_draft(Draft::Draft7).
+                        compile(&doc).
+                        map_err(|err|
+                            std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to compile schema {}: {}", path_string, format_error(err)))
+                        )
+                );
+
+                if let Ok(schema) = res {
+                    log::info!("loaded {}", key);
+                    schemas.insert(key, schema);
+                } else if let Err(err) = res {
+                    log::error!("failed to load {}", err);
+                };
+            }
+        }
     }
 
     Ok(schemas)
@@ -102,7 +121,14 @@ fn config(schemas: &web::Data<HashMap<String, JSONSchema>>) -> impl FnOnce(&mut 
 async fn main() -> std::io::Result<()> {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
 
-    let schemas = web::Data::new(load_schemas(env::args().skip(1)).expect("Failed to load schemas"));
+    // default to the current working directory
+    let paths = if env::args().len() == 1 {
+        vec!(".".to_string())
+    } else {
+        env::args().skip(1).collect()
+    };
+
+    let schemas = web::Data::new(load_schemas(paths).expect("failed to load schemas"));
     let bind = env::var("ADDR").unwrap_or(String::from("127.0.0.1:8080"));
 
     log::info!("starting server at http://{}", bind);
