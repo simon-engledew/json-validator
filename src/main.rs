@@ -1,21 +1,14 @@
-extern crate env_logger;
-
-use std::env;
-use std::fs::File;
-use std::io::BufReader;
-use std::collections::HashMap;
+use env_logger;
 use log;
-use std::fmt;
-
-use walkdir::WalkDir;
-use jsonschema::{Draft, JSONSchema};
 use serde_json;
-use actix_web::{error, web, get, post, App, HttpServer, HttpRequest};
-use actix_web::middleware::Logger;
+use walkdir;
+use jsonschema;
+use actix_web;
 
+type SchemaMap = std::collections::HashMap<String, jsonschema::JSONSchema>;
 
-#[get("/_ping")]
-async fn ping(_req: HttpRequest) -> impl actix_web::Responder {
+#[actix_web::get("/_ping")]
+async fn ping(_req: actix_web::HttpRequest) -> impl actix_web::Responder {
     "OK"
 }
 
@@ -37,7 +30,7 @@ fn get_message(errors: jsonschema::ErrorIterator) -> String {
     for (i, err) in iter {
         if out.len() > 512 {
             rest += 1;
-            continue
+            continue;
         }
 
         if i > 0 {
@@ -56,42 +49,55 @@ fn get_message(errors: jsonschema::ErrorIterator) -> String {
     out
 }
 
-#[post("/{path:.*}")]
-async fn validate(schemas: web::Data<HashMap<String, JSONSchema>>, document: web::Json<serde_json::Value>, info: web::Path<(String,)>) -> actix_web::Result<impl actix_web::Responder> {
+#[actix_web::post("/{path:.*}")]
+async fn validate(
+    schemas: actix_web::web::Data<SchemaMap>,
+    document: actix_web::web::Json<serde_json::Value>,
+    info: actix_web::web::Path<(String,)>,
+) -> actix_web::Result<impl actix_web::Responder> {
     let info = info.into_inner();
 
-    let schema = schemas.get(&info.0).ok_or(error::ErrorNotFound("not found"))?;
+    let schema = schemas
+        .get(&info.0)
+        .ok_or(actix_web::error::ErrorNotFound("not found"))?;
 
-    schema.validate(&document).map_err(|errors| error::ErrorBadRequest(get_message(errors)))?;
+    schema
+        .validate(&document)
+        .map_err(|errors| actix_web::error::ErrorBadRequest(get_message(errors)))?;
 
     Ok("")
 }
 
 #[derive(Debug)]
 enum LoadError<'a> {
-    ReadError(&'a str, std::io::Error),
-    ParseError(&'a str, serde_json::Error),
-    CompileError(&'a str, std::string::String),
+    Read(&'a str, std::io::Error),
+    Parse(&'a str, serde_json::Error),
+    Compile(&'a str, String),
 }
 
-impl fmt::Display for LoadError<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl std::fmt::Display for LoadError<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match &*self {
-            LoadError::ReadError(path, err) =>
-                write!(f, "Failed to read schema {}: {}", path, err),
-            LoadError::ParseError(path, err) =>
-                write!(f, "Failed to parse schema {}: {}", path, err),
-            LoadError::CompileError(path, msg) =>
-                write!(f, "Failed to compile schema {}: {}", path, msg),
+            LoadError::Read(path, err) => write!(f, "Failed to read schema {}: {}", path, err),
+            LoadError::Parse(path, err) => {
+                write!(f, "Failed to parse schema {}: {}", path, err)
+            }
+            LoadError::Compile(path, msg) => {
+                write!(f, "Failed to compile schema {}: {}", path, msg)
+            }
         }
     }
 }
 
-fn load_schemas<'a>(paths: impl IntoIterator<Item = String>) -> Result<HashMap<String, JSONSchema>, LoadError<'a>> {
-    let mut schemas = HashMap::new();
+fn load_schemas<'a>(paths: impl IntoIterator<Item = String>) -> Result<SchemaMap, LoadError<'a>> {
+    let mut schemas = SchemaMap::new();
 
     for path_string in paths {
-        for entry in WalkDir::new(&path_string).into_iter().filter_map(Result::ok).filter(|e| !e.file_type().is_dir()) {
+        for entry in walkdir::WalkDir::new(&path_string)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|e| !e.file_type().is_dir())
+        {
             let path = entry.into_path();
 
             let key = String::from(path.strip_prefix("./").unwrap_or(&path).to_string_lossy());
@@ -99,12 +105,18 @@ fn load_schemas<'a>(paths: impl IntoIterator<Item = String>) -> Result<HashMap<S
             if key.ends_with(".json") {
                 log::debug!("Considering {}", key);
 
-                let res = File::open(path).map_err(|err| LoadError::ReadError(&key, err)
-                    ).and_then(|file|
-                        serde_json::from_reader(BufReader::new(file)).map_err(|err| LoadError::ParseError(&key, err))
-                    ).and_then(|doc|
-                        JSONSchema::options().with_draft(Draft::Draft7).compile(&doc).map_err(|err| LoadError::CompileError(&key, err.to_string()))
-                    );
+                let res = std::fs::File::open(path)
+                    .map_err(|err| LoadError::Read(&key, err))
+                    .and_then(|file| {
+                        serde_json::from_reader(std::io::BufReader::new(file))
+                            .map_err(|err| LoadError::Parse(&key, err))
+                    })
+                    .and_then(|doc| {
+                        jsonschema::JSONSchema::options()
+                            .with_draft(jsonschema::Draft::Draft7)
+                            .compile(&doc)
+                            .map_err(|err| LoadError::Compile(&key, err.to_string()))
+                    });
 
                 if let Ok(schema) = res {
                     log::info!("Loaded {}", key);
@@ -119,13 +131,16 @@ fn load_schemas<'a>(paths: impl IntoIterator<Item = String>) -> Result<HashMap<S
     Ok(schemas)
 }
 
-fn config(schemas: &web::Data<HashMap<String, JSONSchema>>) -> impl FnOnce(&mut web::ServiceConfig) + '_ {
-    move |cfg: &mut web::ServiceConfig| {
-        cfg
-            .app_data(web::Data::new(web::JsonConfig::default().limit(1024 * 1024 * 500)))
-            .app_data(web::Data::clone(schemas))
-            .service(ping)
-            .service(validate);
+fn config(
+    schemas: &actix_web::web::Data<SchemaMap>,
+) -> impl FnOnce(&mut actix_web::web::ServiceConfig) + '_ {
+    move |cfg: &mut actix_web::web::ServiceConfig| {
+        cfg.app_data(actix_web::web::Data::new(
+            actix_web::web::JsonConfig::default().limit(1024 * 1024 * 500),
+        ))
+        .app_data(actix_web::web::Data::clone(schemas))
+        .service(ping)
+        .service(validate);
     }
 }
 
@@ -134,21 +149,25 @@ async fn main() -> std::io::Result<()> {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
 
     // default to the current working directory
-    let paths = if env::args().len() == 1 {
-        vec!(".".to_string())
+    let paths = if std::env::args().len() == 1 {
+        vec![".".to_string()]
     } else {
-        env::args().skip(1).collect()
+        std::env::args().skip(1).collect()
     };
 
-    let schemas = web::Data::new(load_schemas(paths).expect("failed to load schemas"));
-    let bind = env::var("ADDR").unwrap_or(String::from("127.0.0.1:8080"));
+    let schemas = actix_web::web::Data::new(load_schemas(paths).expect("failed to load schemas"));
+    let bind = std::env::var("ADDR").unwrap_or(String::from("127.0.0.1:8080"));
 
     log::info!("starting server at http://{}", bind);
 
-    HttpServer::new(move || App::new().wrap(Logger::default()).configure(config(&schemas)))
-        .bind(bind)?
-        .run()
-        .await
+    actix_web::HttpServer::new(move || {
+        actix_web::App::new()
+            .wrap(actix_web::middleware::Logger::default())
+            .configure(config(&schemas))
+    })
+    .bind(bind)?
+    .run()
+    .await
 }
 
 #[cfg(test)]
@@ -156,14 +175,15 @@ mod tests {
     use super::*;
     use actix_web::{
         http::{header::ContentType, StatusCode},
-        web::{Bytes},
         test,
+        web::Bytes,
     };
 
     #[actix_web::test]
     async fn test_validation() {
-        let schemas = web::Data::new(load_schemas(vec![String::from("schemas/names.json")]).expect("ok"));
-        let app = test::init_service(App::new().configure(config(&schemas))).await;
+        let schemas =
+            web::Data::new(load_schemas(vec![String::from("schemas/names.json")]).expect("ok"));
+        let app = test::init_service(actix_web::App::new().configure(config(&schemas))).await;
         let req = test::TestRequest::post()
             .insert_header(ContentType::json())
             .uri("/schemas/names.json")
@@ -173,6 +193,9 @@ mod tests {
         let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let result = test::read_body(resp).await;
-        assert_eq!(result, Bytes::from_static(b"\"name\" is a required property, \"age\" is a required property"));
+        assert_eq!(
+            result,
+            Bytes::from_static(b"\"name\" is a required property, \"age\" is a required property")
+        );
     }
 }
