@@ -142,7 +142,37 @@ fn config(
     }
 }
 
-fn iter_either<T>(
+macro_rules! either_iter {
+    {
+        if $($rest:tt)*
+    } => {
+        either_iter_parser! {
+            predicate = ()
+            rest = ($($rest)*)
+        }
+    };
+}
+
+macro_rules! either_iter_parser {
+    {
+        predicate = ($($predicate:tt)*)
+        rest = ({ $($then:tt)* } else { $($else:tt)* })
+    } => {
+        either_iter($($predicate)*, $($then)*, $($else)*)
+    };
+
+    {
+        predicate = ($($predicate:tt)*)
+        rest = ($next:tt $($rest:tt)*)
+    } => {
+        either_iter_parser! {
+            predicate = ($($predicate)* $next)
+            rest = ($($rest)*)
+        }
+    };
+}
+
+fn either_iter<T>(
     pred: bool,
     a: impl Iterator<Item = T>,
     b: impl Iterator<Item = T>,
@@ -161,11 +191,13 @@ fn iter_either<T>(
 async fn main() -> std::io::Result<()> {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
 
-    let paths = iter_either(
-        std::env::args().len() > 1,
-        std::env::args().skip(1),
-        std::iter::once(String::from(".")),
-    );
+    let paths = either_iter! {
+        if std::env::args().len() > 1 {
+            std::env::args().skip(1)
+        } else {
+            std::iter::once(String::from("."))
+        }
+    };
 
     let schemas = actix_web::web::Data::new(load_schemas(paths).expect("failed to load schemas"));
     let bind = std::env::var("ADDR").unwrap_or(String::from("127.0.0.1:8080"));
