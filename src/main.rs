@@ -89,40 +89,48 @@ impl std::fmt::Display for LoadError {
     }
 }
 
+fn to_key(path: &std::path::Path) -> String {
+    let key = String::from(path.strip_prefix("./").unwrap_or(&path).to_string_lossy());
+
+    String::from(key.strip_suffix(".json").unwrap_or(&key))
+}
+
 fn load_schemas(paths: impl IntoIterator<Item = String>) -> Result<SchemaMap, LoadError> {
     let mut schemas = SchemaMap::new();
 
     for path_string in paths {
-        for entry in walkdir::WalkDir::new(&path_string)
+        for path in walkdir::WalkDir::new(&path_string)
             .into_iter()
             .filter_map(Result::ok)
             .filter(|e| !e.file_type().is_dir())
+            .map(|e| e.into_path())
+            .filter(|path| {
+                path.extension()
+                    .map(|extension| extension == "json")
+                    .unwrap_or(false)
+            })
         {
-            let path = entry.into_path();
+            let key = to_key(&path);
 
-            let key = String::from(path.strip_prefix("./").unwrap_or(&path).to_string_lossy());
+            log::debug!("Considering {}", key);
 
-            if key.ends_with(".json") {
-                log::debug!("Considering {}", key);
+            let schema = std::fs::File::open(path)
+                .map_err(|err| LoadError::Read(String::from(key.as_str()), err))
+                .and_then(|file| {
+                    serde_json::from_reader(std::io::BufReader::new(file))
+                        .map_err(|err| LoadError::Parse(String::from(key.as_str()), err))
+                })
+                .and_then(|doc| {
+                    jsonschema::JSONSchema::options()
+                        .with_draft(jsonschema::Draft::Draft7)
+                        .compile(&doc)
+                        .map_err(|err| {
+                            LoadError::Compile(String::from(key.as_str()), err.to_string())
+                        })
+                })?;
 
-                let schema = std::fs::File::open(path)
-                    .map_err(|err| LoadError::Read(String::from(key.as_str()), err))
-                    .and_then(|file| {
-                        serde_json::from_reader(std::io::BufReader::new(file))
-                            .map_err(|err| LoadError::Parse(String::from(key.as_str()), err))
-                    })
-                    .and_then(|doc| {
-                        jsonschema::JSONSchema::options()
-                            .with_draft(jsonschema::Draft::Draft7)
-                            .compile(&doc)
-                            .map_err(|err| {
-                                LoadError::Compile(String::from(key.as_str()), err.to_string())
-                            })
-                    })?;
-
-                log::info!("Loaded {}", key);
-                schemas.insert(key, schema);
-            }
+            log::info!("Loaded {}", key);
+            schemas.insert(key, schema);
         }
     }
 
